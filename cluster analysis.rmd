@@ -1,0 +1,187 @@
+---
+title: "Porządkowanie liniowe i analiza skupień"
+author: "Filip Kopańko"
+date: "2023-12-17"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+
+<style>
+body {
+text-align: justify
+}
+</style>
+
+# 1. Opis danych
+
+```{r}
+library(readxl)
+# Wczytanie danych z pliku Excel
+data <- read_excel("C:\\Users\\MiroT\\Downloads\\caffeine.xlsx")
+data
+```
+
+Analiza została przeprowadzona na podstawie danych pozyskanych ze strony internetowej [kaggle.com](https://www.kaggle.com/datasets/heitornunes/caffeine-content-of-drinks). Dane przedstawiają listę napojów zawierających kofeinę. Niektóre obserwacje nie są dosłownie napojami, a dokładnie mielona kawa lub liście herbaty, które wyprodukowałyby taką objętość (ml), jeśli zostałyby przygotowane zgodnie z zaleceniami producenta.
+
+Atrybuty:
+
+-   drink - nazwa napoju
+-   Volume (ml) - objętość
+-   Calories - Ilość kalorii
+-   Caffeine (mg) - Ilość kofeiny
+-   type - typ napoju (Coffee, Energy Drinks, Energy Shots, Soft Drinks, Tea, Water)
+
+# 2. Wstępna analiza danych
+
+#### Statystyki opisowe:
+
+```{r}
+summary(data[, c(2, 3, 4)])
+```
+
+#### Macierz korelacji:
+
+```{r}
+library(corrplot)
+cor_matrix <- cor(data[, c(2, 3, 4)])
+corrplot(cor_matrix, method = "number")
+```
+
+Wszędzie \|corr\|\< 0.9, nie ma więc powodu do odrzucenia zmiennych do analizy skupień.
+
+#### Współczynnniki zmiennośći:
+
+```{r}
+coefficient_of_variation<- function(x) {
+  cv <- sd(x) / abs(mean(x))
+  return(cv)
+}
+cvs <- sapply(data[, c(2, 3, 4)], coefficient_of_variation)
+cvs
+```
+
+Wszędzie współczynnik zmienności jest większy od 10%, więc nie ma konieczności odrzucenia zmiennych do analizy skupień.
+
+#### Wykresy:
+
+![](images/WINWORD_QhWAl9HDzr.png)
+
+# 3. Porządkowanie liniowe
+
+## Metoda Hellwiga
+
+Załóżmy, że dla kogoś, kto sięga po napój zawierający kofeinę, najbardziej pożądany jest napój z jej największą ilością, jednocześnie zawierający jak najmniej kalorii. Możemy więc zauważyć, że zmienna 'Caffeine (mg)' jest stymulantą, 'Calories' jest destymulantą, a zmienną 'Volume (ml)' możemy traktować jako nominantę (idealny napój ma 250ml). Spróbujemy odpowiedzieć sobie na pytanie, jaki napój jest najlepszy pod względem przyjętych kryteriów.
+
+W pierwszej kolejności należy wszystkie cechy zamienić na stymulanty. Dla zmiennej 'Calories' uzyskamy to mnożąc wartości zmiennej przez (-1), natomiast dla 'Volume (ml)' skorzystamy ze wzoru:
+
+![](images/chrome_5CYs3tgXXy.png){width="323"}
+
+Gdzie Nj oznacza wartość nominalną dla j-tej zmiennej (tj. wartość optymalna, najlepsza).
+
+```{r}
+data2 <- data.frame(data)
+data2[,3] <- data2[,3]* (-1)
+data2[,2] <- ifelse(data2[,2] == 250,1,
+              ifelse(data2[,2] < 250, -1/(data2[,2]-250-1),1/(data2[,2]-250+1)))
+data2
+```
+
+Następnie standaryzuje dane:
+
+```{r}
+  data_standardized <- data.frame(scale(data2[,2:4]))
+  data_standardized
+```
+
+Tworzę wzorzec, tj. „najlepszy" obiekt:
+
+```{r}
+  pattern <- apply(data_standardized,2,max)
+  pattern
+```
+
+Obliczam odległość obiektów od wzorca (bez wag):
+
+```{r}
+  distance <- apply(data_standardized, 1,  function(row) {sqrt(sum((row-pattern)^2))})
+  head(distance)
+```
+
+Tworzę odległość „możliwie daleką":
+
+```{r}
+  max_distance <- mean(distance) + 2*sd(distance)
+  head(max_distance)
+```
+
+Znajduję wartość miary dla każdego obiektu:
+
+```{r}
+  result <- c(1 - distance/max_distance)
+  head(result)
+```
+
+```{r}
+  rank_order2 <- data[order(-result), 1:5]
+  rank_order2
+```
+
+### Wynik
+
+Okazuje się, że najlepsza -- pod względem użytych kryteriów -- jest kawa "Black Label Brewed Coffee". Najgorszym natomiast wyborem okazuje się również kawa - "Arby's Jamocha Shake"
+
+# 4. Analiza skupień
+
+## Metoda k-średnich
+
+Aby wyonać analizę skupień, pozwolę sobie wybrać próbę losową z danych.
+
+```{r}
+  set.seed(433)
+  df <- sample(1:nrow(data), 50)
+  sample <- data[df,]
+  sample
+```
+
+Ponieważ nie chcemy, aby algorytm grupowania był zależny od dowolnej jednostki zmiennej, zaczynamy od skalowania.
+
+```{r}
+  data_standardized2 <- scale(sample[,2:4])
+  data_standardized2
+```
+
+Aby sprawdzić, czy w moich danych nie ma obiektów, które są outlierami, stosuję regułę trzech sigm.
+
+```{r}
+  sigm_3 <- apply(data_standardized2, MARGIN = c(1, 2), FUN = function(x) abs(x) > 3)
+  sigm_3
+```
+
+Wszystkie obiekty przyjmują wartość "FALSE", oznacza to, że w moich danych nie ma outlierów.
+
+Następnie, aby wybrać optymalną liczbę grup, posłużę się metodą łokciową (elbow method), za pomocą której liczba grup dobierana jest tak, aby zminimalizować zmienność wewnątrz wszystkich klastrów.
+
+```{r}
+  library(psych)
+  library(factoextra)
+  fviz_nbclust(data_standardized2, kmeans, method= "wss")
+```
+
+Poszukuję punktu, w którym tempo spadku wartości WSS zmniejsza się, a wykres zaczyna przybierać charakterystyczny kształt łokcia. W tym przypadku taka zmiana zachodzi między trzecią a czwartą liczbą grup, co sugeruje, że optymalną liczbą klastrów zgodnie z metodą WSS jest 3.
+
+```{r}
+  km <- kmeans(data_standardized2, 3, 100000)
+  cluster <-fviz_cluster(km, sample[,2:4])
+  cluster
+  
+  wynik <- describeBy(sample[,2:4], group = km$cluster)
+  wynik
+```
+
+**Grupa 1**: Są to napoje najgorsze pod względem przyjętych już wcześniej kryteriów. Zawierają najwięcej, ze wszystkich grup, kalori na 100ml, bo średnio aż 45, oraz najmniej kofeiny na 100ml, bo średnio niespełna 24mg.
+
+**Grupa 2**: Są to dobre napoje pod względem przyjętych wcześniej kryteriów. Zawierają średnio 35mg kofeiny na 100ml, oraz najmniej kalori na 100ml, ze wszystkich grup, bo średnio poniżej 1 kalori.
+
+**Grupa 3**: Są to napoje generalnie, w mojej ocenie, najlepsze. Są średnio najbardziej zbliżone objętością do przyjętej wcześniej idealnej objętości napoju. Zawierają najwięcej, ze wszystkich grup, kofeiny na 100ml, bo średnio ponad 39mg, jednak więcej kalori, niż w przypadku grupy 2, bo średnio prawie 18 kalori na 100ml.
